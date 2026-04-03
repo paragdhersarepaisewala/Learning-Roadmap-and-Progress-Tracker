@@ -1,286 +1,278 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ROADMAP_DATA, DEFAULT_RESOURCES } from './data';
-import { BookOpen, Calendar, ChevronRight, Download, BrainCircuit, ExternalLink, CheckCircle, Circle, ArrowLeft, Plus, Trash2, Search, Loader2, MessageSquare, Send } from 'lucide-react';
+import {
+  BookOpen, BrainCircuit, Download, CheckCircle, Circle,
+  Plus, Trash2, Search, Loader2, Settings, Link,
+  FileText, Film, Headphones, Globe, ExternalLink, ShieldCheck
+} from 'lucide-react';
+import SettingsModal, { GEMINI_MODELS } from './components/SettingsModal';
+import ChatPage from './components/ChatPage';
+import AdminPanel from './components/AdminPanel';
+import { generateContent } from './lib/gemini';
+import { fetchResources, deleteResource as apiDeleteResource, isAdmin } from './lib/api';
 
-function App() {
+// ─── Resource type config ───
+const RESOURCE_TYPES = [
+  { value: 'link',   label: 'Link',    icon: Link },
+  { value: 'docs',   label: 'Docs',    icon: FileText },
+  { value: 'video',  label: 'Video',   icon: Film },
+  { value: 'course', label: 'Course',  icon: BookOpen },
+  { value: 'audio',  label: 'Podcast', icon: Headphones },
+  { value: 'tool',   label: 'Tool',    icon: Globe },
+];
+
+const resourceIcon = (type) => {
+  const cfg = RESOURCE_TYPES.find(r => r.value === type);
+  const Icon = cfg?.icon || Link;
+  return <Icon className="w-3.5 h-3.5" />;
+};
+
+const resourceColor = (type) => {
+  const map = {
+    link:   'text-blue-400 bg-blue-500/10 border-blue-500/20',
+    docs:   'text-purple-400 bg-purple-500/10 border-purple-500/20',
+    video:  'text-red-400 bg-red-500/10 border-red-500/20',
+    course: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+    audio:  'text-green-400 bg-green-500/10 border-green-500/20',
+    tool:   'text-cyan-400 bg-cyan-500/10 border-cyan-500/20',
+  };
+  return map[type] || map.link;
+};
+
+// ─── Main App ───
+export default function App() {
+  const [activeView, setActiveView]   = useState('roadmap'); // 'roadmap' | 'chat'
   const [activeMonth, setActiveMonth] = useState(1);
-  const [activeWeek, setActiveWeek] = useState(ROADMAP_DATA.months[0].weeks[0].id);
-  
-  // Persisted state
-  const [completedDays, setCompletedDays] = useState(() => JSON.parse(localStorage.getItem('completedDays')) || []);
-  const [resources, setResources] = useState(() => JSON.parse(localStorage.getItem('resources')) || DEFAULT_RESOURCES);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('geminiApiKey') || '');
-  
-  // UI state
-  const [activeView, setActiveView] = useState('roadmap'); // 'roadmap' | 'chat'
-  
-  // Chat state
-  const [chatMessages, setChatMessages] = useState([]);
-  const [chatInput, setChatInput] = useState('');
-  const [isChatLoading, setIsChatLoading] = useState(false);
-  const chatEndRef = useRef(null);
-  const [askInput, setAskInput] = useState('');
+  const [activeWeek, setActiveWeek]   = useState(ROADMAP_DATA.months[0].weeks[0].id);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showAdmin, setShowAdmin]     = useState(false);
+  const [adminMode, setAdminMode]     = useState(() => isAdmin());
 
-  // Resources form state
-  const [isFindingResources, setIsFindingResources] = useState(false);
-  const [newResourceTitle, setNewResourceTitle] = useState('');
-  const [newResourceUrl, setNewResourceUrl] = useState('');
+  // Persisted Settings
+  const [settings, setSettings] = useState(() => {
+    const saved = localStorage.getItem('ag_settings');
+    if (saved) return JSON.parse(saved);
+    return {
+      provider: 'ai_studio',
+      apiKey: localStorage.getItem('ag_api_key') || '',
+      model: localStorage.getItem('ag_model') || 'gemini-3.1-pro-preview',
+      projectId: '',
+      region: 'us-central1'
+    };
+  });
+
+  const [completedDays, setCompletedDays] = useState(() =>
+    JSON.parse(localStorage.getItem('ag_completed') || '[]')
+  );
+
+  // Resources come from the backend (cloud database)
+  const [resources, setResources] = useState(DEFAULT_RESOURCES);
+  const [resourcesLoading, setResourcesLoading] = useState(true);
+  const [resourcesError, setResourcesError] = useState('');
+
+  const [isFinding, setIsFinding] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newRes, setNewRes] = useState({ title: '', url: '', type: 'link', notes: '' });
 
   // Persist effects
-  useEffect(() => { localStorage.setItem('completedDays', JSON.stringify(completedDays)); }, [completedDays]);
-  useEffect(() => { localStorage.setItem('resources', JSON.stringify(resources)); }, [resources]);
-  useEffect(() => { localStorage.setItem('geminiApiKey', apiKey); }, [apiKey]);
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
+  useEffect(() => { localStorage.setItem('ag_settings', JSON.stringify(settings)); }, [settings]);
+  useEffect(() => { localStorage.setItem('ag_completed', JSON.stringify(completedDays)); }, [completedDays]);
+
+  // Load resources from the cloud
+  const loadResources = useCallback(async () => {
+    setResourcesLoading(true);
+    setResourcesError('');
+    try {
+      const data = await fetchResources();
+      // Only replace if we got a valid array back
+      if (Array.isArray(data)) {
+        // Merge cloud custom resources with defaults
+        const dbIds = new Set(data.map(r => r.id));
+        const filteredDefaults = DEFAULT_RESOURCES.filter(r => !dbIds.has(r.id));
+        setResources([...data, ...filteredDefaults]);
+      }
+    } catch (err) {
+      // Network not available (dev mode without backend, or offline)
+      console.warn('Resources API unavailable, using defaults:', err.message);
+      setResourcesError('');  // Don't show error — just use defaults silently
+    } finally {
+      setResourcesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadResources(); }, [loadResources]);
 
   const currentMonthData = ROADMAP_DATA.months.find(m => m.id === activeMonth);
-  const currentWeekData = currentMonthData?.weeks.find(w => w.id === activeWeek) || currentMonthData?.weeks[0];
+  const currentWeekData  = currentMonthData?.weeks.find(w => w.id === activeWeek) || currentMonthData?.weeks[0];
 
-  const toggleDayCompletion = (dayId) => {
-    setCompletedDays(prev => 
-      prev.includes(dayId) ? prev.filter(id => id !== dayId) : [...prev, dayId]
-    );
-  };
+  const toggleDay = (id) =>
+    setCompletedDays(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
-  const addManualResource = () => {
-    if (!newResourceTitle || !newResourceUrl) return;
-    const newRes = { id: Date.now().toString(), title: newResourceTitle, url: newResourceUrl, notes: 'Added manually', week: currentWeekData.id };
-    setResources(prev => [newRes, ...prev]);
-    setNewResourceTitle('');
-    setNewResourceUrl('');
-  };
-
-  const removeResource = (id) => {
-    setResources(prev => prev.filter(r => r.id !== id));
-  };
-
-  const handleAskTutor = (overrideText = '') => {
-    if (!apiKey) {
-      alert("Please enter your Gemini API Key first.");
-      return;
-    }
-    setActiveView('chat');
-    
-    // Set context message if chat is empty
-    if (chatMessages.length === 0) {
-      setChatMessages([{ role: 'model', text: `Hi! I'm your Agentic Tutor. I see you're working on ${currentMonthData.title}, ${currentWeekData.title}. How can I help you master these concepts?` }]);
-    }
-
-    if (overrideText) {
-      sendMessage(overrideText);
-    }
-  };
-
-  const handleAskTutorSubmit = (e) => {
-    e.preventDefault();
-    if (askInput.trim() && apiKey) {
-      const msg = askInput;
-      setAskInput('');
-      handleAskTutor(msg);
-    } else if (!apiKey) {
-      alert("Please enter your Gemini API Key first.");
-    }
-  };
-
-  const sendMessage = async (textToSend = chatInput) => {
-    if (!textToSend.trim() || !apiKey) return;
-    
-    setChatInput('');
-    const newMsg = { role: 'user', text: textToSend };
-    
-    // We update state with the user message immediately
-    setChatMessages(prev => {
-      const nextMessages = [...prev, newMsg];
-      
-      // Perform fetch inside so we have latest history
-      setIsChatLoading(true);
-      
-      const historyForApi = nextMessages.map(m => ({
-        role: m.role === 'model' ? 'model' : 'user',
-        parts: [{ text: m.text }]
-      }));
-      
-      // Add system context invisibly to the last user message for the API call
-      historyForApi[historyForApi.length - 1].parts[0].text += `\n\n[Context: The user is currently learning about "${currentWeekData.title}: ${currentWeekData.goal}". Guide them primarily on this context if applicable.]`;
-
-      fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: historyForApi })
-      })
-      .then(res => res.json())
-      .then(data => {
-        setIsChatLoading(false);
-        if (data.error) throw new Error(data.error.message);
-        const reply = data.candidates[0].content.parts[0].text;
-        setChatMessages(curr => [...curr, { role: 'model', text: reply }]);
-      })
-      .catch(err => {
-        setIsChatLoading(false);
-        setChatMessages(curr => [...curr, { role: 'model', text: `Error: ${err.message}` }]);
-      });
-      
-      return nextMessages;
-    });
-  };
-
-  const findResourcesWithAI = async () => {
-    if (!apiKey) return alert("Please set your Gemini API key first!");
-    setIsFindingResources(true);
+  const removeResource = async (id) => {
+    if (!adminMode) return;
+    const { getAdminSecret } = await import('./lib/api');
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{ text: `Find 3 high-quality free learning resources for: "${currentWeekData.title}" in the context of "${currentWeekData.goal}". Return raw JSON array with objects containing keys: "title", "url", "notes" (very short). Only valid JSON, no markdown formatting. Avoid backticks.` }]
-          }]
-        })
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      let text = data.candidates[0].content.parts[0].text;
-      
-      // Clean up markdown in case the model returns it
-      const jsonStr = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-      const aiRes = JSON.parse(jsonStr).map(r => ({ ...r, id: Date.now() + Math.random().toString(), week: currentWeekData.id, type: 'ai-suggested' }));
-      
-      setResources(prev => [...aiRes, ...prev]);
+      await apiDeleteResource(id, getAdminSecret());
+      setResources(prev => prev.filter(r => r.id !== id));
     } catch (err) {
-      alert("Failed to find resources: " + err.message);
-    } finally {
-      setIsFindingResources(false);
+      alert('Could not delete resource: ' + err.message);
     }
   };
 
+  const findWithAI = async () => {
+    if (!settings.apiKey) return alert('Add your API key (or access token) in Settings first!');
+    setIsFinding(true);
+    try {
+      const textResponse = await generateContent(settings, [{
+        parts: [{ text: `Find 4 high-quality FREE learning resources for the topic: "${currentWeekData.title}" in the context of: "${currentWeekData.goal}".
+Return ONLY a raw JSON array (no backticks, no markdown). Each object must have: "title" (string), "url" (string, real working URL), "type" (one of: link, docs, video, course, audio, tool), "notes" (max 12 words). Example: [{"title":"...","url":"...","type":"docs","notes":"..."}]` }]
+      }]);
+      let raw = textResponse.replace(/```json|```/gi, '').trim();
+      const parsed = JSON.parse(raw);
+      // In admin mode: save to DB. Otherwise: show locally only
+      if (adminMode) {
+        const { getAdminSecret, createResource } = await import('./lib/api');
+        const saved = await Promise.all(parsed.map(r =>
+          createResource({ ...r, week: currentWeekData.id, aiSuggested: true }, getAdminSecret())
+        ));
+        setResources(prev => [...saved, ...prev]);
+      } else {
+        setResources(prev => [...parsed.map(r => ({ ...r, id: Date.now() + Math.random().toString(36), week: currentWeekData.id, aiSuggested: true })), ...prev]);
+      }
+    } catch (err) {
+      alert('AI resource search failed:\n\n' + err.message);
+    } finally {
+      setIsFinding(false);
+    }
+  };
+
+  // Compute progress
+  const totalDays = ROADMAP_DATA.months.flatMap(m => m.weeks.flatMap(w => w.days)).length;
+  const completedCount = completedDays.length;
+  const pct = Math.round((completedCount / totalDays) * 100);
+
+  // Per-week resources — support both `week` (cloud) and `weekId` (legacy) fields
+  const weekResources = resources.filter(r => {
+    const wId = r.week || r.weekId;
+    return !wId || wId === currentWeekData?.id || wId === 'all';
+  });
+
+  // Chat view
   if (activeView === 'chat') {
     return (
-      <div className="min-h-screen bg-slate-900 text-slate-50 font-sans flex flex-col selection:bg-purple-500/30 selection:text-purple-200">
-        <header className="border-b border-white/10 bg-slate-900/50 p-4 flex items-center justify-between sticky top-0 z-50">
-          <div className="flex items-center gap-3">
-            <button onClick={() => setActiveView('roadmap')} className="p-2 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2">
-              <ArrowLeft className="w-5 h-5 text-slate-300" />
-              <span className="hidden sm:inline font-medium text-slate-300">Back to Roadmap</span>
-            </button>
-            <div className="h-6 w-px bg-white/10 mx-2" />
-            <BrainCircuit className="w-6 h-6 text-purple-400" />
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-blue-400">
-              Agentic Tutor
-            </h1>
-          </div>
-          <div className="flex items-center gap-2">
-            <input 
-              type="password" 
-              placeholder="Gemini API Key" 
-              value={apiKey} 
-              onChange={e => setApiKey(e.target.value)}
-              className="bg-slate-800 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-32 sm:w-48 focus:border-purple-500 focus:outline-none"
-            />
-          </div>
-        </header>
-        
-        <main className="flex-1 overflow-y-auto p-4 max-w-4xl mx-auto w-full space-y-4">
-          {chatMessages.map((m, i) => (
-            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] rounded-2xl p-4 ${m.role === 'user' ? 'bg-purple-600 text-white rounded-tr-sm' : 'bg-slate-800 text-slate-200 border border-white/5 rounded-tl-sm'}`}>
-                {m.text}
-              </div>
-            </div>
-          ))}
-          {isChatLoading && (
-            <div className="flex justify-start">
-              <div className="bg-slate-800 text-slate-200 border border-white/5 rounded-2xl p-4 flex items-center gap-3 rounded-tl-sm">
-                <Loader2 className="w-4 h-4 animate-spin text-purple-400" /> 
-                <span className="text-sm font-medium">Thinking...</span>
-              </div>
-            </div>
-          )}
-          <div ref={chatEndRef} />
-        </main>
-        
-        <footer className="border-t border-white/10 bg-slate-900/80 backdrop-blur p-4 sticky bottom-0">
-          <div className="max-w-4xl mx-auto flex gap-2">
-            <input 
-              type="text"
-              value={chatInput}
-              onChange={e => setChatInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && sendMessage()}
-              placeholder={apiKey ? "Ask something..." : "Enter Gemini API Key in header first..."}
-              disabled={!apiKey || isChatLoading}
-              className="flex-1 bg-slate-800 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:border-purple-500 shadow-inner"
-            />
-            <button 
-              onClick={() => sendMessage()}
-              disabled={!apiKey || !chatInput.trim() || isChatLoading}
-              className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 px-6 rounded-xl transition-colors flex items-center justify-center shadow-lg shadow-purple-500/20"
-            >
-              <Send className="w-5 h-5 text-white" />
-            </button>
-          </div>
-        </footer>
-      </div>
+      <>
+        <SettingsModal
+          isOpen={showSettings}
+          onClose={() => setShowSettings(false)}
+          settings={settings}
+          onSave={(newSettings) => { setSettings(newSettings); setShowSettings(false); }}
+        />
+        <ChatPage
+          settings={settings}
+          weekData={currentWeekData}
+          monthData={currentMonthData}
+          onBack={() => setActiveView('roadmap')}
+        />
+      </>
     );
   }
 
-  // Active displayed resources
-  const visibleResources = resources.filter(r => !r.week || r.week === currentWeekData.id || r.week === 'all');
-
+  // Roadmap view
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 font-sans selection:bg-purple-500/30 selection:text-purple-200">
-      {/* Header */}
-      <header className="border-b border-white/10 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+      <SettingsModal
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        settings={settings}
+        onSave={(newSettings) => { setSettings(newSettings); setShowSettings(false); }}
+      />
+      <AdminPanel
+        isOpen={showAdmin}
+        onClose={() => { setShowAdmin(false); setAdminMode(isAdmin()); }}
+        onResourcesChanged={loadResources}
+      />
+
+      {/* ── Header ── */}
+      <header className="border-b border-white/8 bg-slate-900/70 backdrop-blur-xl sticky top-0 z-50">
+        <div className="max-w-6xl mx-auto px-5 py-3.5 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-gradient-to-br from-purple-500 to-blue-500 rounded-xl shadow-lg shadow-purple-500/20">
-              <BrainCircuit className="w-6 h-6 text-white" />
+              <BrainCircuit className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-blue-400">
+              <h1 className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-blue-400 leading-tight">
                 AgenticDev
               </h1>
-              <p className="text-xs text-slate-400 font-medium">Zero → Job-Ready Roadmap</p>
+              <p className="text-[10px] text-slate-500 font-medium">Zero → Job-Ready</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <input 
-              type="password" 
-              placeholder="Gemini API Key" 
-              value={apiKey} 
-              onChange={e => setApiKey(e.target.value)}
-              className="bg-slate-800/50 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-32 sm:w-48 focus:border-purple-500 focus:outline-none hidden sm:block"
-            />
-            <button className="hidden sm:flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm font-medium transition-all group">
-              <Download className="w-4 h-4 text-slate-400 group-hover:text-white transition-colors" />
-              Export Plan
+
+          {/* Progress pill */}
+          <div className="hidden sm:flex items-center gap-3 flex-1 max-w-xs mx-auto">
+            <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full transition-all duration-500"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <span className="text-xs font-mono text-slate-400 flex-shrink-0">{completedCount}/{totalDays}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Admin toggle */}
+            <button
+              onClick={() => setShowAdmin(true)}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium transition-all border ${
+                adminMode
+                  ? 'bg-purple-500/15 border-purple-500/25 text-purple-400 hover:bg-purple-500/20'
+                  : 'bg-white/5 border-white/8 text-slate-500 hover:text-slate-300 hover:bg-white/10'
+              }`}
+              title="Admin Panel"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span className="hidden sm:inline text-xs">{adminMode ? 'Admin' : ''}</span>
             </button>
+            <button
+            onClick={() => setShowSettings(true)}
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all border ${
+              settings.apiKey
+                ? 'bg-green-500/10 border-green-500/20 text-green-400 hover:bg-green-500/20'
+                : 'bg-amber-500/10 border-amber-500/20 text-amber-400 hover:bg-amber-500/20'
+            }`}
+            title="Settings"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="hidden sm:inline">{settings.apiKey ? 'API ✓' : 'Set API Key'}</span>
+          </button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-12 grid grid-cols-1 lg:grid-cols-[1fr_350px] gap-12">
-        {/* Left Col: Roadmap */}
-        <div className="space-y-12">
-          {/* Intro */}
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-10 grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-10">
+
+        {/* ── Left: Roadmap ── */}
+        <div className="space-y-10">
           <div>
-            <h2 className="text-4xl font-extrabold tracking-tight mb-4">
-              Your Path to <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400">AI Mastery</span>
+            <h2 className="text-3xl sm:text-4xl font-extrabold tracking-tight mb-3">
+              Your Python{' '}
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400">
+                Learning Journey
+              </span>
             </h2>
-            <p className="text-lg text-slate-400 max-w-2xl leading-relaxed">
-              {ROADMAP_DATA.subtitle}. A complete curriculum covering Python, APIs, Multi-agent systems, and deployment.
+            <p className="text-base text-slate-400 max-w-2xl leading-relaxed">
+              Follow the roadmap week by week. Use the AI Tutor to ask questions and get simple, step-by-step explanations as you go.
             </p>
           </div>
 
-          {/* Month Tabs */}
+          {/* Month tabs */}
           <div className="flex flex-wrap gap-2 p-1 bg-white/5 rounded-2xl border border-white/5 w-fit">
-            {ROADMAP_DATA.months.map((month) => (
+            {ROADMAP_DATA.months.map(month => (
               <button
                 key={month.id}
-                onClick={() => {
-                  setActiveMonth(month.id);
-                  setActiveWeek(month.weeks[0].id);
-                }}
-                className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 ${
+                onClick={() => { setActiveMonth(month.id); setActiveWeek(month.weeks[0].id); }}
+                className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-300 ${
                   activeMonth === month.id
-                    ? 'bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-lg shadow-purple-500/25'
+                    ? 'bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-lg shadow-purple-500/20'
                     : 'text-slate-400 hover:text-white hover:bg-white/5'
                 }`}
               >
@@ -289,94 +281,113 @@ function App() {
             ))}
           </div>
 
-          {/* Week Selection & Content */}
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <h3 className="text-2xl font-bold flex items-center gap-3">
-                <span className="w-8 h-8 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-sm border border-purple-500/30">
-                  {currentMonthData.id}
-                </span>
-                {currentMonthData.subtitle}
-              </h3>
-            </div>
+          {/* Week selector + detail */}
+          <div className="space-y-5">
+            <h3 className="text-xl font-bold flex items-center gap-3">
+              <span className="w-7 h-7 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-xs border border-purple-500/30">
+                {currentMonthData.id}
+              </span>
+              {currentMonthData.subtitle}
+            </h3>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              {/* Weeks List */}
-              <div className="md:col-span-1 space-y-2 relative">
-                <div className="absolute left-4 top-4 bottom-4 w-px bg-white/10" />
-                {currentMonthData.weeks.map((week) => {
-                  const weekDays = week.days.length;
-                  const completedInWeek = week.days.filter(d => completedDays.includes(d.id)).length;
-                  const isWeekDone = completedInWeek === weekDays && weekDays > 0;
-                  
+              {/* Week list */}
+              <div className="md:col-span-1 space-y-1.5 relative">
+                <div className="absolute left-4 top-4 bottom-4 w-px bg-white/8" />
+                {currentMonthData.weeks.map(week => {
+                  const done = week.days.filter(d => completedDays.includes(d.id)).length;
+                  const total = week.days.length;
+                  const allDone = done === total;
                   return (
                     <button
                       key={week.id}
                       onClick={() => setActiveWeek(week.id)}
-                      className={`w-full text-left pl-10 py-3 pr-4 rounded-xl relative transition-all ${
+                      className={`w-full text-left pl-10 py-3 pr-3 rounded-xl relative transition-all ${
                         activeWeek === week.id
                           ? 'bg-purple-500/10 text-white font-medium border border-purple-500/20'
-                          : 'text-slate-400 hover:text-white hover:bg-white/5'
+                          : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'
                       }`}
                     >
-                      <div className={`absolute left-[-5px] top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full border-2 border-slate-900 ${
-                        activeWeek === week.id ? 'bg-purple-400' : (isWeekDone ? 'bg-green-400' : 'bg-slate-600')
-                      }`} style={{ marginLeft: '17px' }} />
-                      <div className={`text-xs uppercase tracking-wider mb-1 font-semibold ${isWeekDone ? 'text-green-400' : 'text-purple-400'}`}>
-                        Week {week.weekNum} {isWeekDone && '✓'}
+                      <div
+                        className={`absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full border-2 border-slate-900 transition-colors ${
+                          activeWeek === week.id ? 'bg-purple-400' : allDone ? 'bg-green-400' : 'bg-slate-600'
+                        }`}
+                        style={{ left: '17px' }}
+                      />
+                      <div className={`text-[10px] uppercase tracking-wider mb-0.5 font-bold ${allDone ? 'text-green-400' : 'text-purple-400'}`}>
+                        Week {week.weekNum} {allDone && '✓'}
                       </div>
-                      <div className="text-sm truncate">{week.title}</div>
+                      <div className="text-xs truncate leading-tight">{week.title}</div>
+                      {done > 0 && !allDone && (
+                        <div className="mt-1.5 h-0.5 bg-white/10 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-purple-500/60 rounded-full transition-all"
+                            style={{ width: `${(done / total) * 100}%` }}
+                          />
+                        </div>
+                      )}
                     </button>
                   );
                 })}
               </div>
 
-              {/* Week Details */}
-              <div className="md:col-span-3 bg-white/[0.02] border border-white/10 rounded-3xl p-6 sm:p-8 backdrop-blur-xl">
-                <div className="flex items-start justify-between gap-4 mb-8">
-                  <div>
-                    <h4 className="text-sm font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400 uppercase tracking-widest mb-2">
-                       {currentWeekData.title}
-                    </h4>
-                    <p className="text-slate-300 text-lg leading-relaxed">
-                      {currentWeekData.goal}
-                    </p>
+              {/* Week detail */}
+              <div className="md:col-span-3 bg-white/[0.02] border border-white/8 rounded-3xl overflow-hidden">
+                {/* Week header */}
+                <div className="p-6 sm:p-7 border-b border-white/5">
+                  <div className="text-[10px] font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400 uppercase tracking-widest mb-1.5">
+                    {currentWeekData.title}
                   </div>
+                  <p className="text-slate-300 leading-relaxed text-sm sm:text-base">{currentWeekData.goal}</p>
+
+                  {/* Ask Tutor CTA */}
+                  <button
+                    onClick={() => {
+                    if (!settings.apiKey) { setShowSettings(true); return; }
+                    setActiveView('chat');
+                  }}
+                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-green-600/20 hover:bg-green-600/30 border border-green-500/30 hover:border-green-400/50 rounded-xl text-sm font-semibold text-green-300 hover:text-white transition-all group"
+                >
+                  <span className="text-base">🐍</span>
+                  Ask Python Tutor
+                  {!settings.apiKey && <span className="text-[10px] text-amber-400">(set API key)</span>}
+                </button>
                 </div>
 
-                <div className="space-y-4">
-                  {currentWeekData.days.map((day) => {
-                    const isCompleted = completedDays.includes(day.id);
+                {/* Days */}
+                <div className="divide-y divide-white/5">
+                  {currentWeekData.days.map(day => {
+                    const isDone = completedDays.includes(day.id);
                     return (
-                      <div key={day.id} className="group flex gap-4 p-4 rounded-2xl hover:bg-white/5 transition-colors border border-transparent hover:border-white/5 items-start">
-                        <button 
-                          onClick={() => toggleDayCompletion(day.id)} 
-                          className="mt-1 flex-shrink-0 focus:outline-none"
-                          title="Mark completed"
-                        >
-                          {isCompleted ? (
-                            <CheckCircle className="w-6 h-6 text-green-400" />
-                          ) : (
-                            <Circle className="w-6 h-6 text-slate-600 group-hover:text-slate-400" />
-                          )}
+                      <div key={day.id} className={`flex gap-3 sm:gap-4 p-4 sm:p-5 transition-colors group ${isDone ? 'bg-green-900/5' : 'hover:bg-white/[0.02]'}`}>
+                        {/* Checkbox */}
+                        <button onClick={() => toggleDay(day.id)} className="flex-shrink-0 mt-0.5">
+                          {isDone
+                            ? <CheckCircle className="w-5 h-5 text-green-400" />
+                            : <Circle className="w-5 h-5 text-slate-600 group-hover:text-slate-400 transition-colors" />
+                          }
                         </button>
-                        <div className={`flex-shrink-0 w-12 h-12 rounded-xl border flex flex-col items-center justify-center shadow-inner transition-colors ${
-                          isCompleted ? 'bg-green-900/20 border-green-500/20' : 'bg-slate-800 border-white/5'
+
+                        {/* Day badge */}
+                        <div className={`flex-shrink-0 w-11 h-11 rounded-xl border flex flex-col items-center justify-center text-center transition-colors ${
+                          isDone ? 'bg-green-900/20 border-green-500/20' : 'bg-slate-800 border-white/5'
                         }`}>
-                          <span className={`text-[10px] font-semibold uppercase ${isCompleted ? 'text-green-400/70' : 'text-slate-400'}`}>Day</span>
-                          <span className={`text-lg font-bold leading-none ${isCompleted ? 'text-green-400' : 'text-white'}`}>{day.day}</span>
+                          <span className={`text-[9px] font-bold uppercase ${isDone ? 'text-green-500/70' : 'text-slate-500'}`}>Day</span>
+                          <span className={`text-base font-bold leading-none ${isDone ? 'text-green-400' : 'text-white'}`}>{day.day}</span>
                         </div>
-                        <div className="flex-1">
-                          <h5 className={`font-semibold text-base mb-1 transition-colors ${isCompleted ? 'line-through text-slate-500' : 'text-white'}`}>
+
+                        <div className="flex-1 min-w-0">
+                          <h5 className={`font-semibold text-sm sm:text-base mb-0.5 transition-colors ${isDone ? 'line-through text-slate-500' : 'text-white'}`}>
                             {day.topic}
                           </h5>
-                          <p className={`text-sm leading-relaxed mb-3 transition-colors ${isCompleted ? 'text-slate-600' : 'text-slate-400'}`}>
+                          <p className={`text-xs sm:text-sm leading-relaxed mb-2 transition-colors ${isDone ? 'text-slate-600' : 'text-slate-400'}`}>
                             {day.scope}
                           </p>
                           {day.url && (
-                            <a href={day.url} target="_blank" rel="noreferrer" className={`inline-flex items-center gap-1.5 text-xs font-semibold hover:text-purple-300 transition-colors ${isCompleted ? 'text-slate-600' : 'text-purple-400'}`}>
+                            <a href={day.url} target="_blank" rel="noreferrer"
+                              className={`inline-flex items-center gap-1.5 text-xs font-semibold transition-colors ${isDone ? 'text-slate-600' : 'text-purple-400 hover:text-purple-300'}`}>
                               <BookOpen className="w-3.5 h-3.5" />
-                              {day.resource || 'View Docs'}
+                              {day.resource || 'View Resource'}
                             </a>
                           )}
                         </div>
@@ -389,123 +400,109 @@ function App() {
           </div>
         </div>
 
-        {/* Right Col: Resources / AI Agent box (Sidebar) */}
-        <div className="space-y-8">
-          <div className="bg-gradient-to-b from-purple-900/20 to-transparent border border-purple-500/20 rounded-3xl p-6 relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full blur-3xl -mr-10 -mt-10" />
-            
-            <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
-              <BrainCircuit className="w-5 h-5 text-purple-400" />
-              Agentic Tutor
-            </h3>
-
-            {!apiKey ? (
-              <div className="mb-4 mt-4 bg-red-500/10 border border-red-500/20 p-3 rounded-xl">
-                <p className="text-xs text-red-200 mb-2 font-medium">Gemini API Key required to use AI features</p>
-                <input 
-                  type="password" 
-                  placeholder="Paste your API Key here..." 
-                  value={apiKey} 
-                  onChange={e => setApiKey(e.target.value)}
-                  className="w-full bg-slate-900/80 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-400" 
-                />
-              </div>
-            ) : (
-              <p className="text-sm text-purple-200/70 mb-6">
-                Stuck on a concept? Ask the AI tutor for an explanation scoped strictly to your current week's knowledge.
-              </p>
-            )}
-
-            <form onSubmit={handleAskTutorSubmit} className="space-y-4 pt-2">
-              <input 
-                type="text" 
-                placeholder="Explain variables to me..." 
-                value={askInput}
-                onChange={e => setAskInput(e.target.value)}
-                className="w-full bg-slate-900/50 border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400 transition-all shadow-inner" 
-              />
-              
-              <button 
-                type="button"
-                onClick={() => askInput ? handleAskTutorSubmit({preventDefault:()=>{}}) : handleAskTutor()}
-                className="group relative overflow-hidden rounded-xl bg-purple-600 px-6 py-3 font-semibold text-white shadow-[0_0_40px_-5px_var(--tw-shadow-color)] shadow-purple-500 transition-all duration-300 hover:scale-[1.02] hover:bg-purple-500 w-full active:scale-[0.98]"
-              >
-                <span className="relative z-10 flex items-center justify-center gap-2">
-                  Ask Tutor
-                  <BrainCircuit className="h-4 w-4 transition-transform group-hover:rotate-12 group-hover:scale-110" />
-                </span>
-                <div className="absolute inset-0 z-0 h-full w-full bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-[150%] transition-transform duration-700 ease-in-out group-hover:translate-x-[150%]" />
-              </button>
-            </form>
+        {/* ── Right: Resources Sidebar ── */}
+        <div className="space-y-6">
+          {/* Python Tutor card */}
+          <div className="bg-gradient-to-b from-green-900/20 to-slate-900/0 border border-green-500/20 rounded-3xl p-5 relative overflow-hidden">
+            <div className="absolute -top-6 -right-6 w-28 h-28 bg-green-500/10 rounded-full blur-2xl" />
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xl">🐍</span>
+              <h3 className="text-base font-bold text-white">Python Tutor</h3>
+            </div>
+            <p className="text-xs text-green-200/60 mb-4 leading-relaxed">
+              Stuck on something? Ask your Python tutor. Get simple, step-by-step explanations with real code examples — perfect for beginners.
+            </p>
+            <button
+              onClick={() => {
+                if (!settings.apiKey) { setShowSettings(true); return; }
+                setActiveView('chat');
+              }}
+              className="w-full group relative overflow-hidden rounded-xl bg-gradient-to-r from-green-600 to-emerald-600 px-5 py-3 font-semibold text-white text-sm shadow-lg shadow-green-500/20 transition-all duration-300 hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <span className="relative z-10 flex items-center justify-center gap-2">
+                {settings.apiKey ? 'Open Python Tutor' : 'Set API Key to Chat'}
+                <BrainCircuit className="h-4 w-4 group-hover:rotate-12 transition-transform" />
+              </span>
+              <div className="absolute inset-0 h-full w-full bg-gradient-to-r from-transparent via-white/15 to-transparent -translate-x-[150%] group-hover:translate-x-[150%] transition-transform duration-700" />
+            </button>
           </div>
 
+          {/* Resources */}
           <div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <BookOpen className="w-5 h-5 text-slate-400" />
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <ExternalLink className="w-4 h-4 text-slate-400" />
                 Resources
+                {weekResources.length > 0 && (
+                  <span className="text-xs font-mono text-slate-500">({weekResources.length})</span>
+                )}
               </h3>
-              <button 
-                onClick={findResourcesWithAI}
-                disabled={isFindingResources || !apiKey}
-                className="text-xs flex items-center gap-1.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 font-medium"
-              >
-                {isFindingResources ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
-                Autofill via AI
-              </button>
-            </div>
-
-            <div className="mb-4 space-y-2 p-3 bg-white/5 rounded-xl border border-white/5">
-              <input 
-                type="text" 
-                placeholder="Resource Title" 
-                value={newResourceTitle} 
-                onChange={e => setNewResourceTitle(e.target.value)} 
-                className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500" 
-              />
-              <input 
-                type="text" 
-                placeholder="URL (optional)" 
-                value={newResourceUrl} 
-                onChange={e => setNewResourceUrl(e.target.value)} 
-                className="w-full bg-slate-900 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500" 
-              />
-              <button 
-                onClick={addManualResource} 
-                className="w-full bg-white/10 hover:bg-white/20 text-xs py-2 mt-1 rounded-lg flex items-center justify-center gap-1.5 transition-colors font-medium text-white"
-              >
-                <Plus className="w-3.5 h-3.5" /> Add Custom Resource
-              </button>
-            </div>
-
-            <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-              {visibleResources.length > 0 ? (
-                visibleResources.map((res) => (
-                  <div key={res.id} className="block p-4 rounded-2xl bg-white/[0.02] border border-white/5 relative group transition-colors hover:bg-white/[0.04] hover:border-white/10">
-                    <button 
-                      onClick={() => removeResource(res.id)} 
-                      className="absolute top-3 right-3 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900 p-1.5 rounded-md"
-                      title="Remove resource"
+              <div className="flex items-center gap-2">
+                {adminMode && (
+                  <>
+                    <button
+                      onClick={findWithAI}
+                      disabled={isFinding}
+                      className="text-xs flex items-center gap-1 px-2.5 py-1.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 rounded-lg transition-colors disabled:opacity-50 font-medium"
+                      title={settings.apiKey ? 'Find resources with AI' : 'Set API key first'}
                     >
-                       <Trash2 className="w-3.5 h-3.5" />
+                      {isFinding ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
+                      AI Find
                     </button>
-                    {res.url ? (
-                      <a href={res.url} target="_blank" rel="noreferrer" className="block pr-6">
-                        <h4 className="font-semibold text-white text-sm mb-1 group-hover:text-cyan-400 transition-colors">{res.title}</h4>
-                        <p className="text-xs text-slate-400 leading-relaxed">{res.notes}</p>
-                      </a>
-                    ) : (
-                      <div className="block pr-6">
-                        <h4 className="font-semibold text-white text-sm mb-1">{res.title}</h4>
-                        <p className="text-xs text-slate-400 leading-relaxed">{res.notes}</p>
-                      </div>
-                    )}
+                    <button
+                      onClick={() => setShowAdmin(true)}
+                      className="text-xs flex items-center gap-1 px-2.5 py-1.5 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white border border-white/8 rounded-lg transition-colors font-medium"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Add
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Add resource — handled via Admin Panel (click the Add button above) */}
+
+            {/* Resource list */}
+            <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-0.5 custom-scrollbar">
+              {weekResources.length > 0 ? weekResources.map(res => (
+                <div key={res.id} className="group relative p-3.5 rounded-2xl bg-white/[0.02] hover:bg-white/[0.045] border border-white/5 hover:border-white/10 transition-all">
+                  {adminMode && (
+                    <button
+                      onClick={() => removeResource(res.id)}
+                      className="absolute top-2.5 right-2.5 p-1.5 rounded-lg bg-slate-900 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+
+                  <div className="flex items-start gap-2.5 pr-5">
+                    <span className={`flex-shrink-0 p-1.5 rounded-lg border mt-0.5 ${resourceColor(res.type)}`}>
+                      {resourceIcon(res.type)}
+                    </span>
+                    <div className="min-w-0">
+                      {res.url ? (
+                        <a href={res.url} target="_blank" rel="noreferrer"
+                          className="text-sm font-semibold text-white hover:text-cyan-400 transition-colors leading-tight block truncate">
+                          {res.title}
+                        </a>
+                      ) : (
+                        <p className="text-sm font-semibold text-white leading-tight">{res.title}</p>
+                      )}
+                      {res.notes && (
+                        <p className="text-xs text-slate-500 leading-snug mt-0.5">{res.notes}</p>
+                      )}
+                      {res.aiSuggested && (
+                        <span className="text-[9px] text-blue-400/70 font-semibold uppercase tracking-wider mt-1 block">AI Suggested</span>
+                      )}
+                    </div>
                   </div>
-                ))
-              ) : (
-                <div className="text-center py-8 text-slate-500 border border-dashed border-white/10 rounded-2xl bg-white/[0.01]">
+                </div>
+              )) : (
+                <div className="text-center py-10 text-slate-600 border border-dashed border-white/8 rounded-2xl">
+                  <BookOpen className="w-8 h-8 mx-auto mb-2 opacity-30" />
                   <p className="text-sm">No resources for this week.</p>
-                  <p className="text-xs mt-1">Use the "Autofill via AI" button above!</p>
+                  <p className="text-xs mt-1">Use "AI Find" or "Add" above!</p>
                 </div>
               )}
             </div>
@@ -515,5 +512,3 @@ function App() {
     </div>
   );
 }
-
-export default App;
