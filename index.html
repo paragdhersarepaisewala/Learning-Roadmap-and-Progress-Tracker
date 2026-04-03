@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Agent Roadmap Tracker</title>
+  <meta name="description" content="Personal progress tracker for the Zero to Job-Ready AI Agent Developer 3-month roadmap. Tracks daily tasks, resources, and uses Gemini AI for topic explanations."/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div id="app">
+
+  <!-- HEADER -->
+  <header id="header">
+    <div class="header-logo">
+      <div class="logo-icon">🤖</div>
+      <span class="logo-text">AI Agent Roadmap</span>
+    </div>
+
+    <nav class="header-center">
+      <button class="nav-tab active" data-tab="dashboard" id="tab-dashboard">
+        <span class="tab-icon">📊</span><span class="tab-txt">Dashboard</span>
+      </button>
+      <button class="nav-tab" data-tab="progress" id="tab-progress">
+        <span class="tab-icon">✅</span><span class="tab-txt">Progress</span>
+      </button>
+      <button class="nav-tab" data-tab="resources" id="tab-resources">
+        <span class="tab-icon">📚</span><span class="tab-txt">Resources</span>
+      </button>
+      <button class="nav-tab" data-tab="aiTutor" id="tab-aiTutor">
+        <span class="tab-icon">🤖</span><span class="tab-txt">AI Tutor</span>
+      </button>
+    </nav>
+
+    <div class="header-right">
+      <div class="progress-chip" id="headerProgressChip">
+        <span id="headerProgressPct">0%</span>
+        <div class="chip-bar"><div class="chip-fill" id="headerChipFill" style="width:0%"></div></div>
+      </div>
+      <div id="statusPill" class="status-pill active-status">● Active</div>
+      <button id="settingsBtn" title="Settings">⚙️</button>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main id="main">
+
+    <!-- DASHBOARD TAB -->
+    <div class="tab-panel active" id="panel-dashboard">
+      <div class="db-header">
+        <h1 id="dashTitle">AI Agent Developer Roadmap</h1>
+        <p id="dashSubtitle">Loading your progress...</p>
+      </div>
+
+      <!-- Paused Banner -->
+      <div id="pausedBanner" class="paused-banner hidden">
+        <span>⏸️ Learning is paused.</span>
+        <button class="btn btn-sm btn-primary" id="resumeBtn">▶ Resume Learning</button>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-grid">
+        <div class="stat-card" style="background:rgba(139,92,246,0.07);border-color:rgba(139,92,246,0.2)">
+          <div class="stat-icon" style="background:rgba(139,92,246,0.15)">🗓️</div>
+          <div class="stat-value" id="statCurrentWeek">—</div>
+          <div class="stat-label">Current Week</div>
+          <div class="stat-sub" id="statWeekTitle">—</div>
+        </div>
+        <div class="stat-card" style="background:rgba(16,185,129,0.07);border-color:rgba(16,185,129,0.2)">
+          <div class="stat-icon" style="background:rgba(16,185,129,0.15)">✅</div>
+          <div class="stat-value" id="statCompletedDays">0</div>
+          <div class="stat-label">Days Completed</div>
+          <div class="stat-sub" id="statTotalDays">of 84 days</div>
+        </div>
+        <div class="stat-card" style="background:rgba(6,182,212,0.07);border-color:rgba(6,182,212,0.2)">
+          <div class="stat-icon" style="background:rgba(6,182,212,0.15)">📅</div>
+          <div class="stat-value" id="statStartDate">—</div>
+          <div class="stat-label">Started</div>
+          <div class="stat-sub" id="statEndDate">—</div>
+        </div>
+        <div class="stat-card" style="background:rgba(245,158,11,0.07);border-color:rgba(245,158,11,0.2)">
+          <div class="stat-icon" style="background:rgba(245,158,11,0.15)">⚡</div>
+          <div class="stat-value" id="statStreak">0</div>
+          <div class="stat-label">Day Streak</div>
+          <div class="stat-sub" id="statStreakSub">Keep it up!</div>
+        </div>
+      </div>
+
+      <!-- Continue / Jump to week -->
+      <div class="continue-section" id="continueSection">
+        <div class="continue-text">
+          <h3 id="continueTitle">Continue where you left off</h3>
+          <p id="continueDesc">Pick up from your current week</p>
+        </div>
+        <button class="btn btn-primary" id="continueBtn">Go to Week →</button>
+      </div>
+
+      <!-- Month Progress -->
+      <div class="section-title">📈 Monthly Progress</div>
+      <div class="month-progress-grid" id="monthProgressGrid"></div>
+
+      <!-- Overall -->
+      <div class="section-title">🎯 Overall Progress</div>
+      <div class="card card-pad" style="margin-bottom:24px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <span style="font-size:14px;font-weight:600">Total Completion</span>
+          <span style="font-size:20px;font-weight:800;letter-spacing:-1px" id="overallPct">0%</span>
+        </div>
+        <div class="progress-bar" style="height:10px">
+          <div class="progress-fill" id="overallBar" style="width:0%;background:linear-gradient(90deg,#8b5cf6,#06b6d4,#10b981)"></div>
+        </div>
+        <div class="pb-labels" style="margin-top:8px">
+          <span>0%</span>
+          <span id="overallDaysLabel">0 / 84 days</span>
+          <span>100%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROGRESS TAB -->
+    <div class="tab-panel" id="panel-progress">
+      <div class="ph">
+        <div>
+          <h2 style="font-size:22px;font-weight:800;letter-spacing:-.4px">Learning Progress</h2>
+          <p style="font-size:13px;color:var(--text-2);margin-top:4px">Check off each day as you complete it</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-sm btn-secondary" id="expandAllBtn">Expand All</button>
+          <button class="btn btn-sm btn-secondary" id="collapseAllBtn">Collapse All</button>
+          <button class="btn btn-sm btn-secondary" id="jumpCurrentBtn">📍 Jump to Current Week</button>
+        </div>
+      </div>
+      <div id="progressContent"></div>
+    </div>
+
+    <!-- RESOURCES TAB -->
+    <div class="tab-panel" id="panel-resources">
+      <div class="res-toolbar">
+        <div>
+          <h2 style="font-size:22px;font-weight:800;letter-spacing:-.4px">Learning Resources</h2>
+          <p style="font-size:13px;color:var(--text-2);margin-top:4px" id="resCount">Loading resources...</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div class="search-wrap">
+            <span class="search-icon">🔍</span>
+            <input type="text" class="search-input" id="resSearch" placeholder="Search resources..."/>
+          </div>
+          <button class="btn btn-primary" id="addResBtn">+ Add Resource</button>
+        </div>
+      </div>
+      <div class="res-filters" id="resFilters" style="margin-bottom:16px">
+        <button class="filter-chip active" data-filter="all">All</button>
+        <button class="filter-chip" data-filter="docs">📄 Docs</button>
+        <button class="filter-chip" data-filter="course">🎓 Courses</button>
+        <button class="filter-chip" data-filter="tool">🛠️ Tools</button>
+        <button class="filter-chip" data-filter="video">🎬 Video</button>
+        <button class="filter-chip" data-filter="other">📎 Other</button>
+      </div>
+      <div class="res-grid" id="resGrid"></div>
+    </div>
+
+    <!-- AI TUTOR TAB -->
+    <div class="tab-panel" id="panel-aiTutor">
+      <div class="ai-layout">
+        <!-- Chat Panel -->
+        <div class="chat-panel">
+          <div class="chat-hdr">
+            <div class="ai-avatar">✨</div>
+            <div class="chat-hdr-info">
+              <h3>Gemini AI Tutor</h3>
+              <p>Ask anything about your roadmap topics</p>
+            </div>
+            <div class="chat-status">
+              <div class="status-dot" id="aiStatusDot"></div>
+              <span id="aiStatusText">No API key</span>
+            </div>
+          </div>
+          <div class="chat-msgs" id="chatMessages">
+            <div class="chat-welcome" id="chatWelcome">
+              <div class="wi">🤖</div>
+              <h3>Your AI Learning Tutor</h3>
+              <p>Ask me to explain any topic from your roadmap. Click <strong>"Ask AI"</strong> on any day item, or type your question below.</p>
+              <p style="font-size:12px;color:var(--text-3);margin-top:8px">Add your Gemini API key in the panel →</p>
+            </div>
+          </div>
+          <div class="chat-input-area">
+            <textarea id="chatInput" placeholder="Ask about LangGraph, RAG, function calling, Ollama setup..." rows="1"></textarea>
+            <button id="sendBtn" title="Send">➤</button>
+          </div>
+        </div>
+
+        <!-- Quick Panel -->
+        <div class="quick-panel">
+          <!-- API Key -->
+          <div class="api-key-box">
+            <h4>🔑 Gemini API Key</h4>
+            <p>Get your free key at <a href="https://aistudio.google.com/" target="_blank">aistudio.google.com</a> — no credit card.</p>
+            <div class="akin-wrap">
+              <input type="password" id="apiKeyInput" placeholder="AIza..."/>
+              <button class="akin-toggle" id="apiKeyToggle" title="Show/Hide">👁</button>
+            </div>
+            <button class="akin-save" id="apiKeySave">Save Key</button>
+          </div>
+
+          <!-- Current Week Context -->
+          <div class="week-ctx" id="weekContext">
+            <strong>📍 Current Week</strong>
+            <span id="weekContextText">Loading...</span>
+          </div>
+
+          <!-- Quick Prompts -->
+          <div>
+            <div class="qs-title">Quick Questions</div>
+            <div class="quick-prompts" id="quickPrompts">
+              <button class="qp-btn" data-prompt="Explain what LangGraph is and why it's better than raw LLM API calls for building agents">What is LangGraph and why use it?</button>
+              <button class="qp-btn" data-prompt="Explain RAG (Retrieval Augmented Generation) in simple terms with a practical example for an AI agent">What is RAG and how does it work?</button>
+              <button class="qp-btn" data-prompt="Explain how function calling / tool use works with Gemini API. Give a simple Python code example">How does tool use work with Gemini?</button>
+              <button class="qp-btn" data-prompt="What is the difference between LangGraph and Google ADK? When should I use each one?">LangGraph vs Google ADK — which to use?</button>
+              <button class="qp-btn" data-prompt="Explain ChromaDB and how it fits into a RAG pipeline. Give a minimal Python example">How does ChromaDB work for RAG?</button>
+              <button class="qp-btn" data-prompt="What is the ReAct pattern for AI agents? Explain Reason-Act-Observe with a concrete example">What is the ReAct pattern?</button>
+              <button class="qp-btn" data-prompt="What is Ollama and how do I use it to run local LLMs? What models should a beginner start with?">How do I run LLMs locally with Ollama?</button>
+              <button class="qp-btn" data-prompt="Give me a minimal FastAPI endpoint that accepts a chat message, calls the Gemini API, and returns the response">Show me a FastAPI + Gemini example</button>
+            </div>
+          </div>
+
+          <!-- Clear chat -->
+          <button class="btn btn-ghost btn-sm" id="clearChatBtn" style="align-self:flex-start">🗑 Clear Chat</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- =================== MODALS =================== -->
+
+<!-- RESOURCE MODAL -->
+<div class="modal-overlay" id="resourceModal">
+  <div class="modal">
+    <div class="modal-hdr">
+      <h2 id="resourceModalTitle">Add Resource</h2>
+      <button class="modal-close" data-close="resourceModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="resourceId"/>
+      <div class="form-group">
+        <label class="form-label">Title *</label>
+        <input type="text" class="form-input" id="resourceTitle" placeholder="e.g. LangGraph Quickstart Tutorial"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">URL</label>
+        <input type="url" class="form-input" id="resourceUrl" placeholder="https://..."/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes</label>
+        <textarea class="form-textarea" id="resourceNotes" placeholder="Why is this resource useful? What does it cover?"></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Type</label>
+          <select class="form-select" id="resourceType">
+            <option value="docs">📄 Docs / Reference</option>
+            <option value="course">🎓 Course</option>
+            <option value="tool">🛠️ Tool</option>
+            <option value="video">🎬 Video</option>
+            <option value="other">📎 Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Week</label>
+          <select class="form-select" id="resourceWeek">
+            <option value="">— General —</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tags (comma separated)</label>
+        <input type="text" class="form-input" id="resourceTags" placeholder="e.g. python, langchain, free"/>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-close="resourceModal">Cancel</button>
+      <button class="btn btn-primary" id="saveResourceBtn">Save Resource</button>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS MODAL -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <div class="modal-hdr">
+      <h2>⚙️ Settings</h2>
+      <button class="modal-close" data-close="settingsModal">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="settings-section">
+        <div class="settings-section-title">📅 Learning Schedule</div>
+
+        <div class="form-group">
+          <label class="form-label">Start Date</label>
+          <input type="date" class="form-input" id="settingsStartDate"/>
+          <p style="font-size:12px;color:var(--text-2);margin-top:6px">Your current week and end date are calculated from this.</p>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Learning Status</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="status-option-btn active" id="statusActive" data-status="active">▶ Active Learning</button>
+            <button class="status-option-btn" id="statusPaused" data-status="paused">⏸ Pause Learning</button>
+          </div>
+          <p style="font-size:12px;color:var(--text-2);margin-top:8px" id="statusDescription">You're actively learning. Current week advances automatically.</p>
+        </div>
+
+        <div class="form-group" id="pausedOnGroup" style="display:none">
+          <label class="form-label">Paused On</label>
+          <input type="date" class="form-input" id="settingsPausedDate" readonly/>
+          <p style="font-size:12px;color:var(--text-2);margin-top:6px">Time won't count toward your current week while paused.</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">🔑 AI Tutor</div>
+        <div class="form-group">
+          <label class="form-label">Gemini API Key</label>
+          <div class="akin-wrap">
+            <input type="password" class="form-input" id="settingsApiKey" placeholder="AIza..."/>
+            <button class="akin-toggle" id="settingsApiKeyToggle">👁</button>
+          </div>
+          <p style="font-size:12px;color:var(--text-2);margin-top:6px">Free at <a href="https://aistudio.google.com/" target="_blank">aistudio.google.com</a>. Stored locally in your browser only.</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">🗄️ Data</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" id="exportDataBtn">⬇ Export Progress</button>
+          <button class="btn btn-secondary btn-sm" id="importDataBtn">⬆ Import Progress</button>
+          <input type="file" id="importFileInput" accept=".json" style="display:none"/>
+          <button class="btn btn-danger btn-sm" id="resetProgressBtn">🗑 Reset All Progress</button>
+        </div>
+        <p style="font-size:12px;color:var(--text-2);margin-top:10px">Progress is saved in your browser's localStorage. Export to back it up.</p>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-close="settingsModal">Cancel</button>
+      <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST CONTAINER -->
+<div id="toastContainer"></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
