@@ -7,14 +7,16 @@
  * - Chat history, API keys, and progress stay in the browser (localStorage)
  */
 
-'use strict';
-
 const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
 const { v4: uuidv4 } = require('uuid');
-const admin   = require('firebase-admin');
 const fs      = require('fs');
+const db      = require('./db');
+const multer  = require('multer');
+const pdfParse = require('pdf-parse');
+const mammoth = require('mammoth');
+const { generateContent, generateEmbeddings, cosineSimilarity } = require('./gemini');
 
 let localConfig = {};
 try {
@@ -23,33 +25,22 @@ try {
   // Ignore, running via env vars
 }
 
-// ─── Firebase Init ───────────────────────────────────────────────────────────
-let db;
-
-function initFirebase() {
-  if (admin.apps.length) return;
-
-  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  const serviceAccount = serviceAccountJson ? JSON.parse(serviceAccountJson) : localConfig.FIREBASE_SERVICE_ACCOUNT;
-  
-  if (!serviceAccount) {
-    console.warn('⚠️  FIREBASE_SERVICE_ACCOUNT not set — using emulator/no-db mode');
-    return;
-  }
-
-  try {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      projectId: serviceAccount.project_id,
-    });
-    db = admin.firestore();
-    console.log('✅ Firestore connected:', serviceAccount.project_id);
-  } catch (err) {
-    console.error('❌ Firebase init failed:', err.message);
-  }
+// ─── File Upload Setup ────────────────────────────────────────────────────────
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR);
 }
-
-initFirebase();
+// Using diskStorage to retain extensions for mime types check if needed
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, UPLOAD_DIR)
+  },
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname);
+    cb(null, uuidv4() + ext)
+  }
+});
+const upload = multer({ storage: storage });
 
 // ─── Express Setup ────────────────────────────────────────────────────────────
 const app  = express();
@@ -73,95 +64,222 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// ─── Resources Collection ─────────────────────────────────────────────────────
-const COLLECTION = 'resources';
-
-async function getResources() {
-  if (!db) return getMockResources();
-  const snap = await db.collection(COLLECTION).orderBy('createdAt', 'desc').get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-}
-
-async function createResource(data) {
-  if (!db) throw new Error('Database not available');
-  const id  = uuidv4();
-  const doc = { ...data, createdAt: admin.firestore.FieldValue.serverTimestamp() };
-  await db.collection(COLLECTION).doc(id).set(doc);
-  return { id, ...doc };
-}
-
-async function updateResource(id, data) {
-  if (!db) throw new Error('Database not available');
-  const ref = db.collection(COLLECTION).doc(id);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error('Not found');
-  await ref.update({ ...data, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-  return { id, ...snap.data(), ...data };
-}
-
-async function deleteResource(id) {
-  if (!db) throw new Error('Database not available');
-  const ref = db.collection(COLLECTION).doc(id);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error('Not found');
-  await ref.delete();
-}
-
-// Fallback in-memory mock when no DB configured (dev mode)
-let mockResources = [];
-function getMockResources() { return [...mockResources]; }
-
-// ─── API Routes ───────────────────────────────────────────────────────────────
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, db: !!db, timestamp: new Date().toISOString() });
-});
-
-// Public: list all resources
-app.get('/api/resources', async (req, res) => {
+// ─── Chat History API Routes ──────────────────────────────────────────────────
+app.get('/api/chats', (req, res) => {
   try {
-    const resources = await getResources();
-    res.json(resources);
+    const chats = db.getChats();
+    res.json(chats);
   } catch (err) {
-    console.error('GET /api/resources error:', err);
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Admin: create resource
-app.post('/api/resources', requireAdmin, async (req, res) => {
+app.post('/api/chats', (req, res) => {
   try {
-    const { title, url, type, notes, tags, week } = req.body;
-    if (!title) return res.status(400).json({ error: 'title is required' });
-    const resource = await createResource({ title, url: url || '', type: type || 'link', notes: notes || '', tags: tags || [], week: week || '' });
-    res.status(201).json(resource);
+    const { title } = req.body;
+    const id = 'chat_' + Date.now();
+    const chat = db.createChat(id, title || 'New Chat');
+    res.json(chat);
   } catch (err) {
-    console.error('POST /api/resources error:', err);
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Admin: update resource
-app.put('/api/resources/:id', requireAdmin, async (req, res) => {
+app.delete('/api/chats/:id', (req, res) => {
   try {
-    const updated = await updateResource(req.params.id, req.body);
-    res.json(updated);
-  } catch (err) {
-    if (err.message === 'Not found') return res.status(404).json({ error: 'Not found' });
-    console.error('PUT /api/resources/:id error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Admin: delete resource
-app.delete('/api/resources/:id', requireAdmin, async (req, res) => {
-  try {
-    await deleteResource(req.params.id);
+    db.deleteChat(req.params.id);
     res.json({ ok: true });
   } catch (err) {
-    if (err.message === 'Not found') return res.status(404).json({ error: 'Not found' });
-    console.error('DELETE /api/resources/:id error:', err);
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/chats/:id', (req, res) => {
+  try {
+    const { title } = req.body;
+    db.updateChatTitle(req.params.id, title);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Settings API Route
+app.get('/api/settings', (req, res) => {
+  res.json(db.getSetting('app_settings') || {});
+});
+
+app.post('/api/settings', (req, res) => {
+  db.setSetting('app_settings', req.body);
+  res.json({ ok: true });
+});
+
+// ─── Document Upload API (RAG) ────────────────────────────────────────────────
+function chunkText(text, maxChars = 2000) {
+  const chunks = [];
+  let current = 0;
+  while (current < text.length) {
+    chunks.push(text.slice(current, current + maxChars));
+    current += maxChars;
+  }
+  return chunks;
+}
+
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  try {
+    const { chatId } = req.body;
+    if (!chatId) return res.status(400).json({ error: 'chatId is required' });
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const fileExt = path.extname(req.file.originalname).toLowerCase();
+    const filePath = req.file.path;
+    let extractedText = '';
+
+    // Extract text based on file type
+    if (fileExt === '.pdf') {
+      const dataBuffer = fs.readFileSync(filePath);
+      const data = await pdfParse(dataBuffer);
+      extractedText = data.text;
+    } else if (fileExt === '.docx') {
+      const data = await mammoth.extractRawText({ path: filePath });
+      extractedText = data.value;
+    } else if (['.txt', '.md', '.csv', '.json'].includes(fileExt)) {
+      extractedText = fs.readFileSync(filePath, 'utf8');
+    } else {
+      // It might be an image, so we just return the file info, no text extraction
+      return res.json({ 
+        id: req.file.filename,
+        originalName: req.file.originalname,
+        filename: req.file.filename,
+        type: 'image' 
+      });
+    }
+
+    if (!extractedText.trim()) {
+      return res.status(400).json({ error: 'Could not extract text from document.' });
+    }
+
+    // Process Document for RAG
+    const settings = db.getSetting('app_settings');
+    const docId = 'doc_' + Date.now();
+    db.addDocument(docId, chatId, req.file.filename, req.file.originalname, extractedText);
+
+    // Chunk and embed
+    const chunks = chunkText(extractedText);
+    const embeddings = await generateEmbeddings(settings, chunks);
+
+    chunks.forEach((chunk, idx) => {
+      db.addDocumentChunk('chunk_' + uuidv4(), docId, idx, chunk, embeddings[idx]);
+    });
+
+    res.json({
+      id: docId,
+      originalName: req.file.originalname,
+      filename: req.file.filename,
+      type: 'document',
+      chunks: chunks.length
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Gemini Chat Endpoint with RAG & Multimodal ───────────────────────────────
+function fileToGenerativePart(filename) {
+  const filePath = path.join(UPLOAD_DIR, filename);
+  const ext = path.extname(filename).toLowerCase();
+  let mimeType = 'image/jpeg';
+  if (ext === '.png') mimeType = 'image/png';
+  if (ext === '.webp') mimeType = 'image/webp';
+  if (ext === '.heic') mimeType = 'image/heic';
+  
+  return {
+    inlineData: {
+      data: Buffer.from(fs.readFileSync(filePath)).toString('base64'),
+      mimeType
+    }
+  };
+}
+
+app.post('/api/chat/message', async (req, res) => {
+  try {
+    const { chatId, text, images } = req.body;
+    const settings = db.getSetting('app_settings');
+    if (!settings?.apiKey) {
+      return res.status(400).json({ error: 'No API configuration set. Please update settings.' });
+    }
+
+    // Save User Message
+    const userMsgId = 'msg_' + Date.now();
+    db.addMessage(userMsgId, chatId, 'user', text);
+
+    // Context Generation (RAG)
+    let contextStr = '';
+    const docs = db.getDocumentChunksByChatId(chatId);
+    if (docs && docs.length > 0) {
+      // Create embedding query
+      const queryEmbed = await generateEmbeddings(settings, [text]);
+      const targetVec = queryEmbed[0];
+      
+      // Calculate scores
+      const scoredChunks = docs.map(doc => {
+        return {
+          text: doc.text,
+          score: cosineSimilarity(targetVec, doc.embedding)
+        };
+      });
+
+      // Top 3 chunks
+      scoredChunks.sort((a, b) => b.score - a.score);
+      const topChunks = scoredChunks.slice(0, 3);
+      if (topChunks.length > 0) {
+        contextStr = 'Context Documents:\\n' + topChunks.map((c, i) => `[Doc ${i}]: ${c.text}`).join('\\n\\n') + '\\n\\n';
+      }
+    }
+
+    // Construct history for Gemini
+    const chats = db.getChats().find(c => c.id === chatId);
+    const messages = chats ? chats.messages : [];
+    
+    // We'll take the last 10 messages for context window + system prompt
+    const recentMessages = messages.slice(-10);
+
+    const apiContents = [
+      { role: 'user', parts: [{ text: 'You are a helpful programming tutor. Be clear and conversational. Here is some document context you may optionally use to answer: ' + contextStr }] },
+      { role: 'model', parts: [{ text: 'Understood.' }] }
+    ];
+
+    for (let msg of recentMessages) {
+      if (msg.role === 'user') {
+        const parts = [{ text: msg.text }];
+        // Append images if it's the latest user message
+        if (msg.id === userMsgId && images && images.length > 0) {
+          images.forEach(imgFilename => {
+            parts.push(fileToGenerativePart(imgFilename));
+          });
+        }
+        apiContents.push({ role: 'user', parts });
+      } else {
+        apiContents.push({ role: 'model', parts: [{ text: msg.text }] });
+      }
+    }
+
+    const reply = await generateContent(settings, apiContents);
+    
+    // Save Model Message
+    const modelMsgId = 'msg_' + (Date.now() + 1);
+    db.addMessage(modelMsgId, chatId, 'model', reply);
+
+    res.json({ role: 'model', text: reply });
+
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -183,7 +301,7 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`🚀 AgenticDev backend running on port ${PORT}`);
     console.log(`   Admin: ${ADMIN_SECRET ? '✅ secret configured' : '⚠️  no secret set'}`);
-    console.log(`   DB:    ${db ? '✅ Firestore' : '⚠️  mock/in-memory'}`);
+    console.log(`   DB:    ✅ SQLite Native DataStore`);
   });
 }
 

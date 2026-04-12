@@ -49,17 +49,27 @@ export default function App() {
   const [adminMode, setAdminMode]     = useState(() => isAdmin());
 
   // Persisted Settings
-  const [settings, setSettings] = useState(() => {
-    const saved = localStorage.getItem('ag_settings');
-    if (saved) return JSON.parse(saved);
-    return {
-      provider: 'ai_studio',
-      apiKey: localStorage.getItem('ag_api_key') || '',
-      model: localStorage.getItem('ag_model') || 'gemini-3.1-pro-preview',
-      projectId: '',
-      region: 'us-central1'
-    };
+  const [settings, setSettings] = useState({
+    provider: 'ai_studio',
+    apiKey: '',
+    model: 'gemini-3.1-pro-preview',
+    projectId: '',
+    region: 'us-central1'
   });
+
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/settings').then(res => res.json()).then(data => {
+      if (data && data.apiKey) {
+        setSettings(data);
+      }
+      setSettingsLoaded(true);
+    }).catch(err => {
+      console.error(err);
+      setSettingsLoaded(true);
+    });
+  }, []);
 
   const [completedDays, setCompletedDays] = useState(() =>
     JSON.parse(localStorage.getItem('ag_completed') || '[]')
@@ -75,7 +85,15 @@ export default function App() {
   const [newRes, setNewRes] = useState({ title: '', url: '', type: 'link', notes: '' });
 
   // Persist effects
-  useEffect(() => { localStorage.setItem('ag_settings', JSON.stringify(settings)); }, [settings]);
+  useEffect(() => { 
+    if (settingsLoaded) {
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+      });
+    }
+  }, [settings, settingsLoaded]);
   useEffect(() => { localStorage.setItem('ag_completed', JSON.stringify(completedDays)); }, [completedDays]);
 
   // Load resources from the cloud

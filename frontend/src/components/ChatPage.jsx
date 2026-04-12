@@ -2,9 +2,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ArrowLeft, Send, Trash2,
   MessageSquarePlus, MessageSquare, Code,
-  Copy, CheckCheck, PenLine, BookOpen, ChevronDown, ChevronUp
+  Copy, CheckCheck, PenLine, BookOpen, ChevronDown, ChevronUp, Download, FileText, Paperclip, Loader2, File, Image
 } from 'lucide-react';
-import { generateContent } from '../lib/gemini';
+import html2pdf from 'html2pdf.js';
 
 // ─── Markdown renderer ───────────────────────────────────────────────────────
 function CodeBlock({ lang, code }) {
@@ -127,26 +127,31 @@ function MessageContent({ text }) {
 }
 
 // ─── Chat history helpers ─────────────────────────────────────────────────────
-const STORAGE_KEY = 'py_tutor_chats';
+// ─── Chat history helpers ─────────────────────────────────────────────────────
 
-function loadAllChats() {
+async function loadAllChats() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+    const res = await fetch('/api/chats');
+    if (!res.ok) throw new Error('Failed to load chats');
+    return await res.json();
+  } catch (err) {
+    console.error(err);
+    return [];
+  }
 }
 
-function saveAllChats(chats) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
-}
-
-function createNewChat(title = 'New Chat') {
-  return {
-    id: 'chat_' + Date.now(),
-    title,
-    createdAt: new Date().toISOString(),
-    messages: [],
-  };
+async function createNewChatBackend(title = 'New Chat') {
+  try {
+    const res = await fetch('/api/chats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title })
+    });
+    return await res.json();
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
 }
 
 // ─── System prompt — simple Python beginner ───────────────────────────────────
@@ -177,24 +182,8 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
   const apiKey = settings?.apiKey;
 
   // All chats list
-  const [chats, setChats] = useState(() => {
-    const all = loadAllChats();
-    if (all.length === 0) {
-      const first = createNewChat('Getting Started with Python 🐍');
-      first.messages = [{
-        role: 'model',
-        text: `👋 Hi! I'm your Python tutor.\n\nI'll help you learn Python step by step, starting from the very basics — no experience needed!\n\n**What would you like to learn today?** You can ask me things like:\n- "What is Python?"\n- "How do I print something?"\n- "What is a variable?"\n- "Show me a simple example"\n\nJust type your question below! 😊`
-      }];
-      return [first];
-    }
-    return all;
-  });
-
-  const [activeChatId, setActiveChatId] = useState(() => {
-    const all = loadAllChats();
-    return all.length > 0 ? all[0].id : null;
-  });
-
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showTopics, setShowTopics] = useState(true);
   const [input, setInput] = useState('');
@@ -203,18 +192,27 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
   const [editingTitle, setEditingTitle] = useState(null);
   const [tempTitle, setTempTitle] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+  const [attachedFiles, setAttachedFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [exportingId, setExportingId] = useState(null);
+  const fileInputRef = useRef(null);
 
   const chatEndRef = useRef(null);
   const textareaRef = useRef(null);
 
-  // Derived: active chat
-  const activeChat = chats.find(c => c.id === activeChatId) || chats[0];
-  const messages = activeChat?.messages || [];
-
-  // Persist whenever chats change
   useEffect(() => {
-    saveAllChats(chats);
-  }, [chats]);
+    loadAllChats().then(all => {
+      if (all.length === 0) {
+        startNewChat('Getting Started with Python 🐍');
+      } else {
+        setChats(all);
+        setActiveChatId(all[0].id);
+      }
+    });
+  }, []);
+
+  const activeChat = chats.find(c => c.id === activeChatId) || (chats.length > 0 ? chats[0] : null);
+  const messages = activeChat?.messages || [];
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -228,30 +226,32 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
   }, [input]);
 
   // ── Chat management ──────────────────────────────────────────────────────────
-  const startNewChat = () => {
-    const chat = createNewChat('New Chat');
-    chat.messages = [{
-      role: 'model',
-      text: `👋 Fresh start! Ask me anything about Python.\n\nSome ideas to get going:\n- "Explain variables with an example"\n- "How does a for loop work?"\n- "What's the difference between = and ==?"\n- "Help me understand functions"`
-    }];
+  const startNewChat = async (startTitle = 'New Chat') => {
+    const chat = await createNewChatBackend(startTitle);
+    if (!chat) return;
     setChats(prev => [chat, ...prev]);
     setActiveChatId(chat.id);
     setInput('');
+    setAttachedFiles([]);
   };
 
-  const deleteChat = (id) => {
-    setChats(prev => {
-      const next = prev.filter(c => c.id !== id);
-      if (next.length === 0) {
-        const fresh = createNewChat('Python Basics');
-        return [fresh];
+  const deleteChat = async (id) => {
+    try {
+      await fetch(`/api/chats/${id}`, { method: 'DELETE' });
+      setChats(prev => {
+        const next = prev.filter(c => c.id !== id);
+        if (next.length === 0) {
+          startNewChat('Python Basics');
+        }
+        return next;
+      });
+      if (activeChatId === id) {
+        setActiveChatId(chats.find(c => c.id !== id)?.id || null);
       }
-      return next;
-    });
-    if (activeChatId === id) {
-      setActiveChatId(chats.find(c => c.id !== id)?.id || null);
+      setDeleteConfirmId(null);
+    } catch (err) {
+      console.error(err);
     }
-    setDeleteConfirmId(null);
   };
 
   const startRenameChat = (chat) => {
@@ -259,30 +259,206 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
     setTempTitle(chat.title);
   };
 
-  const confirmRename = (id) => {
+  const confirmRename = async (id) => {
     if (tempTitle.trim()) {
-      setChats(prev => prev.map(c => c.id === id ? { ...c, title: tempTitle.trim() } : c));
+      try {
+        await fetch(`/api/chats/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: tempTitle.trim() })
+        });
+        setChats(prev => prev.map(c => c.id === id ? { ...c, title: tempTitle.trim() } : c));
+      } catch (err) {
+        console.error(err);
+      }
     }
     setEditingTitle(null);
   };
 
-  // Auto-generate a smart title from first user message
   const autoTitle = (firstUserMsg) => {
     const trimmed = firstUserMsg.trim();
     if (trimmed.length <= 30) return trimmed;
     return trimmed.slice(0, 28) + '…';
   };
 
+  // ── Export helpers ───────────────────────────────────────────────────────────
+  // Parse raw message text into code/text segments
+  const parseMessageForExport = (text) => {
+    const segments = [];
+    const codeBlockRegex = /```(\w*)[\r\n]?([\s\S]*?)```/g;
+    let lastIdx = 0, match;
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      if (match.index > lastIdx) segments.push({ type: 'text', content: text.slice(lastIdx, match.index) });
+      segments.push({ type: 'code', lang: match[1] || 'code', content: match[2] });
+      lastIdx = match.index + match[0].length;
+    }
+    if (lastIdx < text.length) segments.push({ type: 'text', content: text.slice(lastIdx) });
+    return segments;
+  };
+
+  // Escape HTML entities
+  const escapeHtml = (str) => String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Convert inline markdown (**bold**, *italic*, `code`) → HTML with inline styles
+  const inlineMD = (raw, isDark) => {
+    const codeBg   = isDark ? '#1e293b' : '#e8edf4';
+    const codeFg   = isDark ? '#86efac' : '#15803d';
+    const boldFg   = isDark ? '#f1f5f9' : '#0f172a';
+    const italicFg = isDark ? '#94a3b8' : '#475569';
+    return escapeHtml(raw)
+      .replace(/\*\*([^*]+)\*\*/g, `<strong style="color:${boldFg};font-weight:700;">$1</strong>`)
+      .replace(/\*([^*]+)\*/g,     `<em style="color:${italicFg};">$1</em>`)
+      .replace(/`([^`]+)`/g,       `<code style="background:${codeBg};color:${codeFg};padding:1px 5px;border-radius:3px;font-family:'Courier New',monospace;font-size:11.5px;">$1</code>`);
+  };
+
+  // Build a complete self-contained HTML string from raw message text.
+  // isDark = true → dark code blocks; false → light (for Word / printing on white)
+  const buildExportHTML = (msgText, isDark = true) => {
+    const segments = parseMessageForExport(msgText);
+
+    const bgPage     = isDark ? '#0f172a' : '#ffffff';
+    const bgCodeOuter = isDark ? '#1e293b' : '#f1f5f9';
+    const bgCodeHdr  = isDark ? '#0f172a' : '#e2e8f0';
+    const fgCode     = isDark ? '#e2e8f0' : '#1e293b';
+    const fgCodeLbl  = isDark ? '#4ade80' : '#16a34a';
+    const fgText     = isDark ? '#cbd5e1' : '#1e293b';
+    const fgHeading  = isDark ? '#f1f5f9' : '#0f172a';
+    const borderCode = isDark ? 'rgba(255,255,255,0.08)' : '#cbd5e1';
+
+    let html = '';
+    segments.forEach(seg => {
+      if (seg.type === 'code') {
+        html += `
+          <div style="background:${bgCodeOuter};border-radius:8px;margin:14px 0;border:1px solid ${borderCode};overflow:hidden;">
+            <div style="background:${bgCodeHdr};padding:6px 12px;border-bottom:1px solid ${borderCode};">
+              <span style="color:${fgCodeLbl};font-size:10px;font-weight:700;font-family:'Courier New',monospace;letter-spacing:0.07em;">${escapeHtml((seg.lang||'code').toUpperCase())}</span>
+            </div>
+            <pre style="margin:0;padding:14px 13px;color:${fgCode};font-family:'Courier New',Courier,monospace;font-size:12.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word;">${escapeHtml(seg.content)}</pre>
+          </div>`;
+      } else {
+        seg.content.split('\n').forEach(rawLine => {
+          const line = rawLine.trimEnd();
+          if (!line.trim()) { html += '<div style="height:6px;"></div>'; return; }
+          const md = (s) => inlineMD(s, isDark);
+          if      (/^### /.test(line)) html += `<h4 style="color:${fgHeading};font-size:13px;font-weight:700;margin:14px 0 3px;font-family:sans-serif;">${md(line.slice(4))}</h4>`;
+          else if (/^## /.test(line))  html += `<h3 style="color:${fgHeading};font-size:15px;font-weight:700;margin:16px 0 4px;font-family:sans-serif;">${md(line.slice(3))}</h3>`;
+          else if (/^# /.test(line))   html += `<h2 style="color:${fgHeading};font-size:17px;font-weight:700;margin:18px 0 6px;font-family:sans-serif;">${md(line.slice(2))}</h2>`;
+          else if (/^[-*•] /.test(line)) html += `<p style="color:${fgText};font-size:12.5px;margin:3px 0 3px 14px;line-height:1.65;font-family:sans-serif;">&bull; ${md(line.replace(/^[-*•] /,''))}</p>`;
+          else if (/^\d+\. /.test(line)) html += `<p style="color:${fgText};font-size:12.5px;margin:3px 0 3px 16px;line-height:1.65;font-family:sans-serif;">${md(line)}</p>`;
+          else                           html += `<p style="color:${fgText};font-size:12.5px;margin:4px 0;line-height:1.65;font-family:sans-serif;">${md(line)}</p>`;
+        });
+      }
+    });
+    return `<div style="background:${bgPage};padding:22px 24px;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">${html}</div>`;
+  };
+
+  const downloadAsPDF = (msgText, msgIndex) => {
+    if (exportingId !== null) return;
+    setExportingId(msgIndex);
+    setTimeout(async () => {
+      let wrapper = null;
+      try {
+        const htmlContent = buildExportHTML(msgText, true); // dark theme
+        wrapper = document.createElement('div');
+        wrapper.innerHTML = htmlContent;
+        // Position off-screen but visible to html2canvas (NOT display:none)
+        wrapper.style.cssText = 'position:fixed;left:-9999px;top:0;width:794px;z-index:-1;';
+        document.body.appendChild(wrapper);
+
+        await html2pdf().set({
+          margin: [8, 8, 8, 8],
+          filename: 'AI_Response.pdf',
+          image: { type: 'png', quality: 1 },
+          html2canvas: {
+            scale: 1.5,
+            useCORS: true,
+            backgroundColor: '#0f172a',
+            logging: false,
+            windowWidth: 794,
+          },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        }).from(wrapper).save();
+      } catch (err) {
+        console.error('PDF export failed:', err);
+      } finally {
+        if (wrapper && wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
+        setExportingId(null);
+      }
+    }, 60);
+  };
+
+  const downloadAsWord = (msgText, msgIndex) => {
+    if (exportingId !== null) return;
+    setExportingId(`word-${msgIndex}`);
+    setTimeout(() => {
+      try {
+        // For Word use dark code blocks but white page background so it prints on white paper too
+        const bodyHTML = buildExportHTML(msgText, true);
+        const docHTML = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
+          xmlns:w='urn:schemas-microsoft-com:office:word'
+          xmlns='http://www.w3.org/TR/REC-html40'>
+          <head><meta charset='utf-8'><title>AI Response</title></head>
+          <body style="font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:0;">${bodyHTML}</body>
+        </html>`;
+        const blob = new Blob([docHTML], { type: 'application/vnd.ms-word;charset=utf-8' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url; a.download = 'AI_Response.doc';
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error('Word export failed:', err);
+      } finally {
+        setExportingId(null);
+      }
+    }, 60);
+  };
+
+  // (kept for legacy use in Word export — inlineMarkdownToHTML alias)
+  const inlineMarkdownToHTML = (text) => inlineMD(text, false);
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('chatId', activeChatId);
+
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      
+      setAttachedFiles(prev => [...prev, data]);
+    } catch (err) {
+      alert(`Upload Error: ${err.message}`);
+    } finally {
+      setUploading(false);
+      e.target.value = null; // reset
+    }
+  };
+
+  const removeAttachment = (filename) => {
+    setAttachedFiles(prev => prev.filter(f => f.filename !== filename));
+  };
+
   // ── Send message ──────────────────────────────────────────────────────────────
   const sendMessage = useCallback(async (textToSend = input) => {
-    if (!textToSend.trim() || loading || !apiKey) return;
+    if ((!textToSend.trim() && attachedFiles.length === 0) || loading || !activeChatId) return;
+    
     setInput('');
     setLoading(true);
 
     const userMsg = { role: 'user', text: textToSend };
     const updatedMessages = [...messages, userMsg];
-
-    // Auto-set title from first user message
+    
+    // Optimistic UI
     setChats(prev => prev.map(c => {
       if (c.id !== activeChatId) return c;
       const newTitle = c.messages.filter(m => m.role === 'user').length === 0
@@ -291,29 +467,30 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
       return { ...c, title: newTitle, messages: updatedMessages };
     }));
 
-    const apiContents = [
-      { role: 'user', parts: [{ text: PYTHON_TUTOR_PROMPT }] },
-      { role: 'model', parts: [{ text: 'Got it! I\'m ready to help you learn Python step by step.' }] },
-      ...updatedMessages.map(m => ({
-        role: m.role === 'user' ? 'user' : 'model',
-        parts: [{ text: m.text }]
-      }))
-    ];
-
     try {
-      const reply = await generateContent(settings, apiContents);
+      // Send to backend
+      const res = await fetch('/api/chat/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: activeChatId,
+          text: textToSend,
+          images: attachedFiles.filter(f => f.type === 'image').map(f => f.filename)
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+
       setChats(prev => prev.map(c =>
         c.id === activeChatId
-          ? { ...c, messages: [...updatedMessages, { role: 'model', text: reply }] }
+          ? { ...c, messages: [...updatedMessages, { role: 'model', text: data.text }] }
           : c
       ));
+      
+      // Clear attachments after successful send
+      setAttachedFiles([]);
     } catch (err) {
-      if (err.retrySeconds) {
-        setRetryCountdown(err.retrySeconds);
-        const t = setInterval(() => {
-          setRetryCountdown(c => { if (c <= 1) { clearInterval(t); return 0; } return c - 1; });
-        }, 1000);
-      }
       setChats(prev => prev.map(c =>
         c.id === activeChatId
           ? { ...c, messages: [...updatedMessages, { role: 'model', text: `⚠️ Error: ${err.message}` }] }
@@ -322,7 +499,7 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
     } finally {
       setLoading(false);
     }
-  }, [input, messages, loading, settings, apiKey, activeChatId]);
+  }, [input, messages, loading, activeChatId, attachedFiles]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -565,14 +742,44 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
                   <span className="text-base">🐍</span>
                 </div>
               )}
-              <div className={`max-w-[82%] sm:max-w-[72%] rounded-2xl p-4 shadow-sm ${m.role === 'user'
-                ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-tr-sm'
-                : 'bg-slate-800/80 border border-white/5 rounded-tl-sm'
-                }`}>
-                {m.role === 'user'
-                  ? <p className="text-sm leading-relaxed">{m.text}</p>
-                  : <MessageContent text={m.text} />
-                }
+              <div className={`max-w-[82%] sm:max-w-[72%] ${m.role === 'user' ? 'flex flex-col items-end' : 'flex flex-col items-start'}`}>
+                <div id={`msg-${i}`} className={`rounded-2xl p-4 shadow-sm ${m.role === 'user'
+                  ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-tr-sm'
+                  : 'bg-slate-800/80 border border-white/5 rounded-tl-sm w-full'
+                  }`}>
+                  {m.role === 'user'
+                    ? <p className="text-sm leading-relaxed">{m.text}</p>
+                    : <MessageContent text={m.text} />
+                  }
+                </div>
+                
+                {/* Download Actions for AI Messages */}
+                {m.role === 'model' && (
+                  <div className="flex gap-2 mt-2 px-1">
+                    <button
+                      onClick={() => downloadAsPDF(m.text, i)}
+                      disabled={exportingId !== null}
+                      className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] sm:text-xs text-slate-400 hover:text-white bg-slate-800/50 hover:bg-slate-700/50 rounded transition-colors border border-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Download as PDF"
+                    >
+                      {exportingId === i
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <Download className="w-3 h-3" />}
+                      PDF
+                    </button>
+                    <button
+                      onClick={() => downloadAsWord(m.text, i)}
+                      disabled={exportingId !== null}
+                      className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] sm:text-xs text-slate-400 hover:text-white bg-slate-800/50 hover:bg-slate-700/50 rounded transition-colors border border-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Download as Word"
+                    >
+                      {exportingId === `word-${i}`
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <FileText className="w-3 h-3" />}
+                      Word
+                    </button>
+                  </div>
+                )}
               </div>
               {m.role === 'user' && (
                 <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-slate-700 border border-white/5 flex items-center justify-center mt-0.5">
@@ -602,11 +809,34 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
           <div ref={chatEndRef} />
         </div>
 
-        {/* Input bar */}
+          {/* Input bar */}
         <div className="flex-shrink-0 border-t border-white/8 bg-slate-900/80 backdrop-blur px-4 sm:px-6 py-4">
-          {!apiKey && (
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleFileUpload}
+            className="hidden" 
+            accept="image/*,.pdf,.doc,.docx,.txt,.md"
+          />
+
+          {/* Attached Files Preview */}
+          {attachedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {attachedFiles.map((file, idx) => (
+                <div key={idx} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 border border-white/10 rounded-full text-xs">
+                  {file.type === 'image' ? <Image className="w-3 h-3 text-blue-400" /> : <File className="w-3 h-3 text-orange-400" />}
+                  <span className="text-slate-300 truncate max-w-[150px]">{file.originalName}</span>
+                  <button onClick={() => removeAttachment(file.filename)} className="text-slate-500 hover:text-red-400 p-0.5 rounded-full ml-1">
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(!settings || !settings.apiKey) && (
             <div className="mb-3 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-200 text-center">
-              ⚠️ No API key set. Go back and open <strong>Settings</strong> to add your Gemini API key.
+              ⚠️ No API key set. Go back and open <strong>Settings</strong> to add your Gemini API key so that the backend can use it.
             </div>
           )}
           {retryCountdown > 0 && (
@@ -617,21 +847,29 @@ export default function ChatPage({ settings, weekData, monthData, onBack }) {
           )}
 
           <div className="flex gap-3 items-end">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading || !activeChatId}
+              className="flex-shrink-0 h-12 w-12 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-white/10 flex items-center justify-center transition-all disabled:opacity-40"
+              title="Upload image or document"
+            >
+              {uploading ? <Loader2 className="w-5 h-5 text-slate-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-slate-400" />}
+            </button>
             <div className="flex-1 bg-slate-800 border border-white/10 rounded-2xl overflow-hidden focus-within:border-green-500/60 focus-within:ring-1 focus-within:ring-green-500/20 transition-all">
               <textarea
                 ref={textareaRef}
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={apiKey ? 'Ask anything about Python… (Shift+Enter for new line)' : 'Set API key in Settings to chat…'}
-                disabled={!apiKey || loading}
+                placeholder={settings?.apiKey ? 'Ask anything about Python… (Shift+Enter for new line)' : 'Set API key in Settings to chat…'}
+                disabled={!settings?.apiKey || loading}
                 rows={1}
                 className="w-full bg-transparent px-4 py-3.5 text-sm text-white placeholder-slate-500 focus:outline-none resize-none leading-relaxed"
               />
             </div>
             <button
               onClick={() => sendMessage()}
-              disabled={!apiKey || !input.trim() || loading}
+              disabled={!settings?.apiKey || (!input.trim() && attachedFiles.length === 0) || loading}
               className="flex-shrink-0 h-12 w-12 rounded-2xl bg-gradient-to-br from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center shadow-lg shadow-green-500/20 transition-all hover:scale-105 active:scale-95"
             >
               <Send className="w-5 h-5 text-white" />
