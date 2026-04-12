@@ -15,5 +15,14 @@ secrets.yaml
 backend/config.json
 firebase-*.json
 
+# SQLite database (contains API keys saved via Settings UI)
+backend/database.sqlite
+backend/database.sqlite-shm
+backend/database.sqlite-wal
+backend/error.log
+
+# Uploads
+backend/uploads/
+
 # Vercel
 .vercel/
